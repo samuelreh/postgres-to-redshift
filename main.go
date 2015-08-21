@@ -9,6 +9,7 @@ import (
 	"github.com/facebookgo/errgroup"
 	"github.com/segmentio/go-env"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -69,7 +70,9 @@ func main() {
 			statement := fmt.Sprintf("(SELECT * FROM %s WHERE %d < id AND id < %d)", table, min, max)
 			group.Add(1)
 			go func(statement string, i int) {
-				if err := pgdb.DumpTableToS3(statement, S3Filename(*s3prefix, fmt.Sprintf("%s-%d", table, i))); err != nil {
+				path := *s3prefix + table + strconv.Itoa(i) + ".txt.gz"
+				log.Println(path)
+				if err := pgdb.DumpTableToS3(statement, path); err != nil {
 					group.Error(err)
 				}
 				group.Done()
