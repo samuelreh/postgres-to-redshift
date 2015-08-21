@@ -3,14 +3,14 @@ package main
 import (
 	"flag"
 	"fmt"
-	"log"
-	"strings"
-	"time"
-
 	"github.com/Clever/go-utils/flagutil"
 	"github.com/Clever/redshifter/postgres"
 	"github.com/Clever/redshifter/redshift"
+	"github.com/facebookgo/errgroup"
 	"github.com/segmentio/go-env"
+	"log"
+	"strings"
+	"time"
 )
 
 var (
@@ -22,6 +22,22 @@ var (
 	redshiftSchema = flag.String("redshiftschema", "public", "Schema name to store the tables.")
 )
 
+type TableInfo struct {
+	Size int
+}
+
+type TableInfos []*TableInfo
+
+func (tis *TableInfos) New() interface{} {
+	ti := &TableInfo{}
+	*tis = append(*tis, ti)
+	return ti
+}
+
+func S3Filename(prefix string, table string) string {
+	return prefix + table + ".txt.gz"
+}
+
 func main() {
 	flag.Parse()
 	if err := flagutil.ValidateFlags(nil); err != nil {
@@ -29,17 +45,37 @@ func main() {
 	}
 	tables := strings.Split(*tablesCSV, ",")
 
-	pgdb := postgres.NewDB(postgres.Config{PoolSize: len(tables)})
+	pgdb := postgres.NewDB(postgres.Config{PoolSize: 10})
 	defer pgdb.Close()
 	tsmap, err := pgdb.GetTableSchemas(tables, "")
 	if err != nil {
 		log.Fatal(err)
 	}
 	if *dumppg {
-		if err := pgdb.DumpTablesToS3(tables, *s3prefix); err != nil {
-			log.Fatal(err)
+		var tableInfos TableInfos
+		query := fmt.Sprintf(`SELECT id AS size FROM %s ORDER BY id DESC limit 1;`, tables[0])
+		_, err := pgdb.Query(&tableInfos, query)
+		if err != nil {
+			panic(err)
 		}
-		log.Println("POSTGRES DUMPED TO S3")
+
+		table := tables[0]
+		splits := 5
+		batchSize := tableInfos[0].Size / splits
+		group := new(errgroup.Group)
+		for i := 0; i < splits; i++ {
+			min := i * batchSize
+			max := min + batchSize
+			statement := fmt.Sprintf("(SELECT * FROM %s WHERE %d < id AND id < %d)", table, min, max)
+			group.Add(1)
+			go func(statement string, i int) {
+				if err := pgdb.DumpTableToS3(statement, S3Filename(*s3prefix, fmt.Sprintf("%s-%d", table, i))); err != nil {
+					group.Error(err)
+				}
+				group.Done()
+			}(statement, i)
+		}
+		group.Wait()
 	}
 	if *updateRS {
 		r, err := redshift.NewRedshift()
