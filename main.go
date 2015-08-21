@@ -68,17 +68,12 @@ func main() {
 			min := i * batchSize
 			max := min + batchSize
 			statement := fmt.Sprintf("(SELECT * FROM %s WHERE %d < id AND id < %d)", table, min, max)
-			group.Add(1)
-			go func(statement string, i int) {
-				path := *s3prefix + table + strconv.Itoa(i) + ".txt.gz"
-				log.Println(path)
-				if err := pgdb.DumpTableToS3(statement, path); err != nil {
-					group.Error(err)
-				}
-				group.Done()
-			}(statement, i)
+			path := *s3prefix + table + strconv.Itoa(i) + ".txt.gz"
+			log.Println(path)
+			if err := pgdb.DumpTableToS3(statement, path); err != nil {
+				panic(err)
+			}
 		}
-		group.Wait()
 	}
 	if *updateRS {
 		r, err := redshift.NewRedshift()
